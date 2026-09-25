@@ -32,7 +32,6 @@
       margin: 0 auto;
     }
 
-    /* Header */
     header {
       display: flex;
       justify-content: space-between;
@@ -64,7 +63,6 @@
       cursor: pointer;
     }
 
-    /* Titulo */
     .title-box {
       text-align: center;
       margin: 18px 0 14px;
@@ -80,7 +78,6 @@
       margin-top: 4px;
     }
 
-    /* Grilla de 19 sobres */
     .grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
@@ -141,7 +138,6 @@
       border-color: #44403c;
     }
 
-    /* Modales */
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -177,7 +173,6 @@
       padding: 6px;
     }
 
-    /* Teclado numérico */
     .pin-dots {
       display: flex;
       justify-content: center;
@@ -218,7 +213,6 @@
       color: #f87171;
     }
 
-    /* Pergamino */
     .parchment {
       background: #fef3c7;
       color: #451a03;
@@ -250,7 +244,6 @@
       transform: scale(0.96);
     }
 
-    /* Footer */
     footer {
       text-align: center;
       font-size: 10px;
@@ -276,7 +269,6 @@
       <p>Toca tu sobre, pon tu PIN y mira a tu amigo secreto.</p>
     </div>
 
-    <!-- Grilla de 19 participantes -->
     <div class="grid" id="envelopesGrid"></div>
   </div>
 
@@ -284,7 +276,7 @@
     Sorteo Protegido &bull; 19 Participantes &bull; En Vivo
   </footer>
 
-  <!-- MODAL: TECLADO PIN -->
+  <!-- MODAL: PIN -->
   <div class="modal-backdrop" id="pinModal">
     <div class="modal-card">
       <button class="close-btn" onclick="closePinModal()">✕</button>
@@ -355,7 +347,6 @@
   </div>
 
   <script>
-    // Asignaciones pactadas: 19 participantes, ciclo cerrado y Jorge no regala ni a Angela, ni a Magda, ni a Arboleda
     const PARTICIPANTS = [
       { name: "Alegría",          pin: "1352", target: "Laura" },
       { name: "Laura",            pin: "2461", target: "Sara" },
@@ -379,7 +370,11 @@
     ];
 
     const MASTER_PIN = "2295";
-    const SYNC_URL = "https://ntfy.sh/amigo_secreto_grupo_19_purecss_2026";
+    
+    // Base de datos persistente JSONBin con API Key integrada
+    const BIN_ID = "66f4b679acd3cb34a88b50f1";
+    const API_KEY = "$2a$10$iGgIe7QWn31gYv77B5lM2eFhD7E2pW2mD1C8d4S1q0.yT2k3Z8k1y"; 
+    const DB_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
 
     let burnedMap = {};
     let activeUser = null;
@@ -388,7 +383,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       try {
-        const saved = localStorage.getItem('burned_cache_group19_safe');
+        const saved = localStorage.getItem('burned_cache_g19_v5');
         if (saved) burnedMap = JSON.parse(saved);
       } catch(e){}
 
@@ -396,59 +391,53 @@
       startSync();
     });
 
-    async function startSync() {
-      async function update() {
-        if (isViewingParchment) return;
-        try {
-          const res = await fetch(`${SYNC_URL}/json?poll=1`, { cache: 'no-store' });
-          if (res.ok) {
-            const text = await res.text();
-            text.trim().split('\n').forEach(line => {
-              try {
-                const msg = JSON.parse(line);
-                const data = JSON.parse(msg.message);
-                if (data.action === 'BURN' && data.name) {
-                  burnedMap[data.name] = true;
-                  localStorage.setItem('burned_cache_group19_safe', JSON.stringify(burnedMap));
-                  renderGrid();
-                } else if (data.action === 'RESET') {
-                  burnedMap = {};
-                  localStorage.setItem('burned_cache_group19_safe', JSON.stringify(burnedMap));
-                  renderGrid();
-                }
-              } catch(e){}
-            });
+    async function fetchCloudData() {
+      if (isViewingParchment) return;
+      try {
+        const res = await fetch(`${DB_URL}/latest`, {
+          headers: { 'X-Access-Key': API_KEY, 'Cache-Control': 'no-cache' }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.record && json.record.burned) {
+            burnedMap = json.record.burned;
+            localStorage.setItem('burned_cache_g19_v5', JSON.stringify(burnedMap));
+            renderGrid();
           }
-        } catch(e){}
-      }
-      await update();
-      setInterval(update, 4000);
+        }
+      } catch(e){}
+    }
+
+    async function updateCloudData(newBurnedMap) {
+      try {
+        await fetch(DB_URL, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Access-Key': API_KEY
+          },
+          body: JSON.stringify({ burned: newBurnedMap })
+        });
+      } catch(e){}
+    }
+
+    function startSync() {
+      fetchCloudData();
+      setInterval(fetchCloudData, 3000);
     }
 
     async function broadcastBurn(name) {
       burnedMap[name] = true;
-      localStorage.setItem('burned_cache_group19_safe', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_g19_v5', JSON.stringify(burnedMap));
       renderGrid();
-      try {
-        await fetch(SYNC_URL, {
-          method: 'POST',
-          body: JSON.stringify({ action: 'BURN', name: name }),
-          headers: { 'Content-Type': 'text/plain' }
-        });
-      } catch(e){}
+      await updateCloudData(burnedMap);
     }
 
     async function broadcastReset() {
       burnedMap = {};
-      localStorage.setItem('burned_cache_group19_safe', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_g19_v5', JSON.stringify(burnedMap));
       renderGrid();
-      try {
-        await fetch(SYNC_URL, {
-          method: 'POST',
-          body: JSON.stringify({ action: 'RESET' }),
-          headers: { 'Content-Type': 'text/plain' }
-        });
-      } catch(e){}
+      await updateCloudData({});
     }
 
     function renderGrid() {

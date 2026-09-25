@@ -48,10 +48,21 @@
       align-items: center;
       gap: 6px;
     }
+    .status-badge {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #064e3b;
+      color: #34d399;
+      border: 1px solid #059669;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
     .header-btns {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
     .btn-small {
       background: #1c1917;
@@ -96,6 +107,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      transition: transform 0.15s ease;
     }
     .envelope:active:not(.burned) {
       background: #292524;
@@ -259,6 +271,7 @@
     <header>
       <div class="logo">🔥 AMIGO SECRETO</div>
       <div class="header-btns">
+        <span class="status-badge" id="statusBadge">● Conectado</span>
         <button class="btn-small" onclick="openAdmin()">🔑 PINs</button>
         <button class="btn-small" onclick="resetAll()">🔄</button>
       </div>
@@ -347,6 +360,7 @@
   </div>
 
   <script>
+    // 19 Participantes con asignaciones fijas (Jorge excluye Angela, Magda y Arboleda)
     const PARTICIPANTS = [
       { name: "Alegría",          pin: "1352", target: "Laura" },
       { name: "Laura",            pin: "2461", target: "Sara" },
@@ -370,11 +384,9 @@
     ];
 
     const MASTER_PIN = "2295";
-    
-    // Base de datos persistente JSONBin con API Key integrada
-    const BIN_ID = "66f4b679acd3cb34a88b50f1";
-    const API_KEY = "$2a$10$iGgIe7QWn31gYv77B5lM2eFhD7E2pW2mD1C8d4S1q0.yT2k3Z8k1y"; 
-    const DB_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
+    // Canal seguro y limpio de ntfy
+    const TOPIC = "amigo_secreto_supra_grupo19_realtime";
+    const SYNC_URL = `https://ntfy.sh/${TOPIC}`;
 
     let burnedMap = {};
     let activeUser = null;
@@ -382,62 +394,114 @@
     let isViewingParchment = false;
 
     document.addEventListener('DOMContentLoaded', () => {
+      // 1. Cargar caché local inmediata
       try {
-        const saved = localStorage.getItem('burned_cache_g19_v5');
+        const saved = localStorage.getItem('burned_cache_g19_fixed');
         if (saved) burnedMap = JSON.parse(saved);
       } catch(e){}
 
       renderGrid();
-      startSync();
+      // 2. Conectar stream en vivo y descargar historial
+      connectSync();
     });
 
-    async function fetchCloudData() {
-      if (isViewingParchment) return;
+    async function connectSync() {
+      const badge = document.getElementById('statusBadge');
+
+      // A. Descargar historial completo con poll=1&since=all
       try {
-        const res = await fetch(`${DB_URL}/latest`, {
-          headers: { 'X-Access-Key': API_KEY, 'Cache-Control': 'no-cache' }
-        });
+        const res = await fetch(`${SYNC_URL}/json?poll=1&since=all`, { cache: 'no-store' });
         if (res.ok) {
-          const json = await res.json();
-          if (json.record && json.record.burned) {
-            burnedMap = json.record.burned;
-            localStorage.setItem('burned_cache_g19_v5', JSON.stringify(burnedMap));
-            renderGrid();
-          }
+          const text = await res.text();
+          text.trim().split('\n').forEach(line => {
+            if (!line) return;
+            try {
+              const item = JSON.parse(line);
+              processPayload(item.message);
+            } catch(e){}
+          });
+        }
+      } catch(e){
+        console.warn("Fallo polling inicial:", e);
+      }
+
+      // B. Suscribirse a Server-Sent Events (SSE) para tiempo real instantáneo
+      try {
+        const evtSource = new EventSource(`${SYNC_URL}/sse`);
+        
+        evtSource.onopen = () => {
+          badge.style.background = "#064e3b";
+          badge.style.borderColor = "#059669";
+          badge.style.color = "#34d399";
+          badge.innerText = "● Conectado";
+        };
+
+        evtSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            processPayload(data.message);
+          } catch(e){}
+        };
+
+        evtSource.onerror = () => {
+          badge.style.background = "#78350f";
+          badge.style.borderColor = "#b45309";
+          badge.style.color = "#fde047";
+          badge.innerText = "● Reconectando";
+        };
+      } catch(e){
+        console.error("Error EventSource:", e);
+      }
+    }
+
+    function processPayload(raw) {
+      if (!raw) return;
+      try {
+        const payload = JSON.parse(raw);
+        if (payload.action === 'BURN' && payload.name) {
+          burnedMap[payload.name] = true;
+          localStorage.setItem('burned_cache_g19_fixed', JSON.stringify(burnedMap));
+          renderGrid();
+        } else if (payload.action === 'RESET') {
+          burnedMap = {};
+          localStorage.setItem('burned_cache_g19_fixed', JSON.stringify(burnedMap));
+          renderGrid();
         }
       } catch(e){}
     }
 
-    async function updateCloudData(newBurnedMap) {
-      try {
-        await fetch(DB_URL, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Access-Key': API_KEY
-          },
-          body: JSON.stringify({ burned: newBurnedMap })
-        });
-      } catch(e){}
-    }
-
-    function startSync() {
-      fetchCloudData();
-      setInterval(fetchCloudData, 3000);
-    }
-
     async function broadcastBurn(name) {
       burnedMap[name] = true;
-      localStorage.setItem('burned_cache_g19_v5', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_g19_fixed', JSON.stringify(burnedMap));
       renderGrid();
-      await updateCloudData(burnedMap);
+
+      // Enviar con retain activo en el servidor
+      try {
+        await fetch(SYNC_URL, {
+          method: 'POST',
+          body: JSON.stringify({ action: 'BURN', name: name, time: Date.now() }),
+          headers: { 
+            'Content-Type': 'text/plain',
+            'X-Tags': 'fire'
+          }
+        });
+      } catch(e){
+        console.error("Error al transmitir quemado:", e);
+      }
     }
 
     async function broadcastReset() {
       burnedMap = {};
-      localStorage.setItem('burned_cache_g19_v5', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_g19_fixed', JSON.stringify(burnedMap));
       renderGrid();
-      await updateCloudData({});
+
+      try {
+        await fetch(SYNC_URL, {
+          method: 'POST',
+          body: JSON.stringify({ action: 'RESET', time: Date.now() }),
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      } catch(e){}
     }
 
     function renderGrid() {
@@ -537,7 +601,7 @@
       document.getElementById('parchmentModal').classList.add('open');
     }
 
-    function executeBurn() {
+    async function executeBurn() {
       if (!confirm("¿Ya memorizaste el nombre? No podrás volver a abrir el papelito.")) return;
 
       const userThatBurned = activeUser ? activeUser.name : null;
@@ -545,7 +609,7 @@
       isViewingParchment = false;
 
       if (userThatBurned) {
-        broadcastBurn(userThatBurned);
+        await broadcastBurn(userThatBurned);
       }
       alert("🔥 Papelito destruido para siempre.");
     }

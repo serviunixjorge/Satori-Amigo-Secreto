@@ -43,10 +43,10 @@
       font-weight: 800;
       letter-spacing: 1px;
       color: #f59e0b;
-      font-size: 1rem;
+      font-size: 0.95rem;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
     }
     .header-btns {
       display: flex;
@@ -57,15 +57,18 @@
       background: #1c1917;
       border: 1px solid #78350f;
       color: #fef3c7;
-      padding: 6px 10px;
+      padding: 5px 9px;
       border-radius: 8px;
       font-size: 11px;
       cursor: pointer;
     }
+    .btn-small:active {
+      background: #451a03;
+    }
 
     .title-box {
       text-align: center;
-      margin: 18px 0 14px;
+      margin: 16px 0 14px;
     }
     .title-box h1 {
       font-size: 1.5rem;
@@ -96,6 +99,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      transition: transform 0.15s ease;
     }
     .envelope:active:not(.burned) {
       background: #292524;
@@ -259,8 +263,9 @@
     <header>
       <div class="logo">🔥 AMIGO SECRETO</div>
       <div class="header-btns">
+        <button class="btn-small" onclick="forceSync()" id="syncBtn">🔄 Sincronizar</button>
         <button class="btn-small" onclick="openAdmin()">🔑 PINs</button>
-        <button class="btn-small" onclick="resetAll()">🔄</button>
+        <button class="btn-small" onclick="resetAll()">⚠️</button>
       </div>
     </header>
 
@@ -372,8 +377,9 @@
 
     const MASTER_PIN = "2295";
     
-    // USAMOS EL CANAL EXACTO QUE SÍ FUNCIONA EN EL GRUPO PEQUEÑO
-    const SYNC_URL = "https://ntfy.sh/amigo_secreto_supra_2026_fire_sync";
+    // Canal exclusivo y limpio para el grupo de 19 participantes
+    const TOPIC = "amigo_secreto_supra_grupo19_definitivo";
+    const SYNC_URL = `https://ntfy.sh/${TOPIC}`;
 
     let burnedMap = {};
     let activeUser = null;
@@ -382,55 +388,78 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       try {
-        const saved = localStorage.getItem('burned_cache_group19_working');
+        const saved = localStorage.getItem('burned_cache_final_g19');
         if (saved) burnedMap = JSON.parse(saved);
       } catch(e){}
 
       renderGrid();
-      startSync();
+      startRealtimeListener();
+      forceSync();
+      setInterval(forceSync, 3000);
     });
 
-    async function startSync() {
-      async function update() {
-        if (isViewingParchment) return; // No cerrar la pantalla si alguien está leyendo
-        try {
-          const res = await fetch(`${SYNC_URL}/json?poll=1`, { cache: 'no-store' });
-          if (res.ok) {
-            const text = await res.text();
-            text.trim().split('\n').forEach(line => {
-              if (!line) return;
-              try {
-                const msg = JSON.parse(line);
-                const data = JSON.parse(msg.message);
-                if (data.action === 'BURN' && data.name) {
-                  burnedMap[data.name] = true;
-                  localStorage.setItem('burned_cache_group19_working', JSON.stringify(burnedMap));
-                  renderGrid();
-                } else if (data.action === 'RESET') {
-                  burnedMap = {};
-                  localStorage.setItem('burned_cache_group19_working', JSON.stringify(burnedMap));
-                  renderGrid();
-                }
-              } catch(e){}
-            });
-          }
-        } catch(e){}
-      }
+    // Escucha en tiempo real inmediata mediante SSE
+    function startRealtimeListener() {
+      try {
+        const es = new EventSource(`${SYNC_URL}/sse`);
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.event === 'message' && data.message) {
+              handleMessage(data.message);
+            }
+          } catch(err){}
+        };
+      } catch(e){}
+    }
 
-      await update();
-      // Sondeo idéntico al código del grupo pequeño
-      setInterval(update, 3000);
+    // Consulta de sondeo y recuperación de mensajes históricos
+    async function forceSync() {
+      if (isViewingParchment) return;
+      try {
+        const res = await fetch(`${SYNC_URL}/json?poll=1&since=all`, { cache: 'no-store' });
+        if (res.ok) {
+          const text = await res.text();
+          const lines = text.trim().split('\n');
+          lines.forEach(line => {
+            if (!line) return;
+            try {
+              const item = JSON.parse(line);
+              if (item.event === 'message' && item.message) {
+                handleMessage(item.message);
+              }
+            } catch(err){}
+          });
+        }
+      } catch(e){}
+    }
+
+    function handleMessage(msg) {
+      if (!msg) return;
+      const trimmed = msg.trim();
+      if (trimmed.startsWith('BURN:')) {
+        const name = trimmed.substring(5).trim();
+        if (name && !burnedMap[name]) {
+          burnedMap[name] = true;
+          localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
+          renderGrid();
+        }
+      } else if (trimmed === 'RESET_ALL') {
+        burnedMap = {};
+        localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
+        renderGrid();
+      }
     }
 
     async function broadcastBurn(name) {
       burnedMap[name] = true;
-      localStorage.setItem('burned_cache_group19_working', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
       renderGrid();
 
       try {
         await fetch(SYNC_URL, {
           method: 'POST',
-          body: JSON.stringify({ action: 'BURN', name: name }),
+          body: `BURN:${name}`,
           headers: { 'Content-Type': 'text/plain' }
         });
       } catch(e){}
@@ -438,13 +467,13 @@
 
     async function broadcastReset() {
       burnedMap = {};
-      localStorage.setItem('burned_cache_group19_working', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
       renderGrid();
 
       try {
         await fetch(SYNC_URL, {
           method: 'POST',
-          body: JSON.stringify({ action: 'RESET' }),
+          body: 'RESET_ALL',
           headers: { 'Content-Type': 'text/plain' }
         });
       } catch(e){}

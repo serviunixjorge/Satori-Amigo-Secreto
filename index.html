@@ -263,7 +263,7 @@
     <header>
       <div class="logo">🔥 AMIGO SECRETO</div>
       <div class="header-btns">
-        <button class="btn-small" onclick="forceSync()" id="syncBtn">🔄 Sincronizar</button>
+        <button class="btn-small" onclick="syncFromCloud(true)" id="syncBtn">🔄 Sincronizar</button>
         <button class="btn-small" onclick="openAdmin()">🔑 PINs</button>
         <button class="btn-small" onclick="resetAll()">⚠️</button>
       </div>
@@ -352,7 +352,6 @@
   </div>
 
   <script>
-    // Asignaciones pactadas: 19 participantes, ciclo cerrado y Jorge no regala ni a Angela, ni a Magda, ni a Arboleda
     const PARTICIPANTS = [
       { name: "Alegría",          pin: "1352", target: "Laura" },
       { name: "Laura",            pin: "2461", target: "Sara" },
@@ -377,9 +376,8 @@
 
     const MASTER_PIN = "2295";
     
-    // Canal exclusivo y limpio para el grupo de 19 participantes
-    const TOPIC = "amigo_secreto_supra_grupo19_definitivo";
-    const SYNC_URL = `https://ntfy.sh/${TOPIC}`;
+    // Base de datos persistente Key-Value (KVdb.io) - Libre, directa y persistente
+    const DB_URL = "https://kvdb.io/4y9hN9m7e7ZJ8a7xP3u4Vv/amigo_secreto_supra_grupo19";
 
     let burnedMap = {};
     let activeUser = null;
@@ -388,95 +386,63 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       try {
-        const saved = localStorage.getItem('burned_cache_final_g19');
+        const saved = localStorage.getItem('burned_cache_kvdb_g19');
         if (saved) burnedMap = JSON.parse(saved);
       } catch(e){}
 
       renderGrid();
-      startRealtimeListener();
-      forceSync();
-      setInterval(forceSync, 3000);
+      syncFromCloud(false);
+      // Consulta automática cada 3 segundos a la base de datos real
+      setInterval(() => syncFromCloud(false), 3000);
     });
 
-    // Escucha en tiempo real inmediata mediante SSE
-    function startRealtimeListener() {
-      try {
-        const es = new EventSource(`${SYNC_URL}/sse`);
-        es.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data);
-            if (data.event === 'message' && data.message) {
-              handleMessage(data.message);
-            }
-          } catch(err){}
-        };
-      } catch(e){}
-    }
-
-    // Consulta de sondeo y recuperación de mensajes históricos
-    async function forceSync() {
+    async function syncFromCloud(userTriggered) {
       if (isViewingParchment) return;
+      const btn = document.getElementById('syncBtn');
+      if (userTriggered) btn.innerText = "⏳...";
+
       try {
-        const res = await fetch(`${SYNC_URL}/json?poll=1&since=all`, { cache: 'no-store' });
+        const res = await fetch(`${DB_URL}?t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
-          const text = await res.text();
-          const lines = text.trim().split('\n');
-          lines.forEach(line => {
-            if (!line) return;
-            try {
-              const item = JSON.parse(line);
-              if (item.event === 'message' && item.message) {
-                handleMessage(item.message);
-              }
-            } catch(err){}
-          });
+          const cloudMap = await res.json();
+          if (cloudMap && typeof cloudMap === 'object') {
+            burnedMap = cloudMap;
+            localStorage.setItem('burned_cache_kvdb_g19', JSON.stringify(burnedMap));
+            renderGrid();
+          }
         }
-      } catch(e){}
+      } catch(e) {
+        console.warn("Error leyendo de KVdb:", e);
+      } finally {
+        if (userTriggered) {
+          setTimeout(() => { btn.innerText = "🔄 Sincronizar"; }, 300);
+        }
+      }
     }
 
-    function handleMessage(msg) {
-      if (!msg) return;
-      const trimmed = msg.trim();
-      if (trimmed.startsWith('BURN:')) {
-        const name = trimmed.substring(5).trim();
-        if (name && !burnedMap[name]) {
-          burnedMap[name] = true;
-          localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
-          renderGrid();
-        }
-      } else if (trimmed === 'RESET_ALL') {
-        burnedMap = {};
-        localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
-        renderGrid();
+    async function saveToCloud(newMap) {
+      try {
+        await fetch(DB_URL, {
+          method: 'POST',
+          body: JSON.stringify(newMap)
+        });
+      } catch(e){
+        console.error("Error guardando en KVdb:", e);
       }
     }
 
     async function broadcastBurn(name) {
       burnedMap[name] = true;
-      localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_kvdb_g19', JSON.stringify(burnedMap));
       renderGrid();
-
-      try {
-        await fetch(SYNC_URL, {
-          method: 'POST',
-          body: `BURN:${name}`,
-          headers: { 'Content-Type': 'text/plain' }
-        });
-      } catch(e){}
+      await saveToCloud(burnedMap);
     }
 
     async function broadcastReset() {
       burnedMap = {};
-      localStorage.setItem('burned_cache_final_g19', JSON.stringify(burnedMap));
+      localStorage.setItem('burned_cache_kvdb_g19', JSON.stringify(burnedMap));
       renderGrid();
-
-      try {
-        await fetch(SYNC_URL, {
-          method: 'POST',
-          body: 'RESET_ALL',
-          headers: { 'Content-Type': 'text/plain' }
-        });
-      } catch(e){}
+      await saveToCloud({});
     }
 
     function renderGrid() {
@@ -630,11 +596,12 @@
       document.getElementById('adminListSection').style.display = 'block';
     }
 
-    function resetAll() {
+    async function resetAll() {
       const pass = prompt("Clave maestra para reiniciar todo a cero:");
       if (pass === MASTER_PIN) {
         if (confirm("¿Seguro de reiniciar todos los sobres?")) {
-          broadcastReset();
+          await broadcastReset();
+          alert("Todos los sobres han sido restaurados.");
         }
       }
     }
